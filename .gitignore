@@ -173,7 +173,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-.png
+*.png
 sim4rec/
 simulator_trai*/
 __pycache__/
