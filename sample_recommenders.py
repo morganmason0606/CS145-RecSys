@@ -111,7 +111,18 @@ class PopularityRecommender:
         """
         if log is None or log.count() == 0:
             return
-            
+        
+        # retrive item feature from log and print out examples 
+        idx = log.select("item_idx").distinct()
+        idx.show(5)
+        # inspect whether item features are in log
+        # print out the schema of log
+        log.printSchema()
+
+        print("Printing item features from log:")
+        print(user_features)
+        print(item_features)
+
         # Calculate item popularity as the fraction of positive interactions
         self.item_popularity = log.groupBy("item_idx").agg(
             sf.sum("relevance").alias("pos_count"),
