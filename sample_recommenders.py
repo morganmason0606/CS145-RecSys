@@ -65,7 +65,7 @@ class LRRecommender(BaseRecommender):
     def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
         cross = users.join(
             items
-        ).drop('__iter').toPandas()
+        ).drop('__iter').toPandas().copy()
 
         cross = pd.get_dummies(cross)
         cross['orig_price'] = cross['price']
@@ -80,6 +80,8 @@ class LRRecommender(BaseRecommender):
         cross = cross.sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
         cross = cross.groupby('user_idx').head(k)
         cross.head(10).to_csv("afin.csv")
+
+        cross['price'] = cross['orig_price']
        
         return pandas_to_spark(cross)
         
