@@ -9,6 +9,55 @@ from pyspark.ml.linalg import Vectors, VectorUDT
 from pyspark.sql.types import DoubleType, ArrayType
 
 from sim4rec.recommenders.ucb import UCB
+class BaseRecommender:
+    def __init__(self, seed=None):
+        self.seed = seed
+        np.random.seed(seed)
+    def fit(self, log, user_features=None, item_features=None):
+        """
+        No training needed for random recommender.
+        
+        Args:
+            log: Interaction log
+            user_features: User features (optional)
+            item_features: Item features (optional)
+        """
+        # No training needed
+        raise NotImplemented()
+    def predict(self, log, k, users, items, user_features=None, item_features=None, filter_seen_items=True):
+        raise NotImplemented()
+    
+import sklearn 
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sim4rec.utils import pandas_to_spark
+class LRRecommender(BaseRecommender):
+    def __init__(self, seed=None):
+        super().__init__(seed)
+        self.model = LogisticRegression(
+            penalty='l2', 
+            C=1.0
+        )
+        self.scalar = StandardScaler()
+    def fit(self, log:DataFrame, user_features=None, item_features=None):
+        if user_features and item_features:
+            pd_log = log.join(
+                user_features, 
+                on='user_idx'
+            ).join(
+                item_features, 
+                on='item_idx'
+            ).drop(
+                'users_idx', 'items_idx'
+            ).toPandas()
+            pd_log = pd.get_dummies(pd_log)
+            pd_log['price'] = self.scalar.fit_transform(pd_log['price'])
+            y = pd_log['relevance']
+            x = pd_log.drop('relevance')
+            self.model.fit(x,y)
+    def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
+        pass
+        
 
 class RandomRecommender:
     """
