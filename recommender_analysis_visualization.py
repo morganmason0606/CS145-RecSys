@@ -454,7 +454,11 @@ def run_recommender_analysis():
     
     # Initialize recommenders with initial history
     for recommender in recommenders:
-        recommender.fit(log=data_generator.history_df)
+        recommender.fit(
+            log=data_generator.history_df, 
+            user_features=users_df,
+            item_features=items_df 
+        )
     
     # Evaluate each recommender separately using train-test split
     results = []

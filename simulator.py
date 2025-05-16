@@ -504,7 +504,7 @@ class CompetitionSimulator:
         user_frac=0.1,
         k=5,
         filter_seen_items=True,
-        retrain=True
+        retrain=False
     ):
         """
         Run a multi-iteration simulation.
@@ -552,7 +552,11 @@ class CompetitionSimulator:
                     ).drop("response")
                     
                     # Train the recommender
-                    recommender.fit(log=training_log)
+                    recommender.fit(
+                        log=training_log, 
+                        user_features=self.simulator.sample_users(1),
+                        item_features=self.simulator.sample_items(1) 
+                    )
                 else:
                     # If no response column, check if the existing relevance column needs to be binarized
                     training_log = self.simulator.log
