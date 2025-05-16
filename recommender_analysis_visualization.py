@@ -452,6 +452,8 @@ def run_recommender_analysis():
     ]
     recommender_names = ["Random", "Popularity", "ContentBased", "MyRecommender"]
     
+
+    #MORGAN: make sure this is changed
     # Initialize recommenders with initial history
     for recommender in recommenders:
         recommender.fit(

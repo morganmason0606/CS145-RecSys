@@ -428,6 +428,8 @@ class CompetitionSimulator:
         # Get item features (including prices)
         items = self.simulator.sample_items(1.0).cache() 
         
+
+        #MORGAN: predict seems to work here, though if we are doing sequential data stuff, we would need user/item features to properly get info from log
         # Generate recommendations
         recs = recommender.predict(
             log=self.simulator.log,
@@ -532,6 +534,9 @@ class CompetitionSimulator:
             
             print(f"Iteration {i}: Revenue = {revenue:.2f}, Metrics = {metrics}")
             
+
+            #MORGAN: this section needs to be fixed: fit does not have user, item featuers
+            # - if Competition Simulator is passed features, than it should be an easy fix
             # Retrain the recommender if needed
             if retrain and i < n_iterations - 1:
                 # Check if the log dataframe contains a 'response' column
@@ -552,11 +557,7 @@ class CompetitionSimulator:
                     ).drop("response")
                     
                     # Train the recommender
-                    recommender.fit(
-                        log=training_log, 
-                        user_features=self.simulator.sample_users(1),
-                        item_features=self.simulator.sample_items(1) 
-                    )
+                    recommender.fit(log=training_log)
                 else:
                     # If no response column, check if the existing relevance column needs to be binarized
                     training_log = self.simulator.log
@@ -693,6 +694,8 @@ class CompetitionSimulator:
             train_metrics_history.append(metrics)
             train_revenue_history.append(revenue)
             
+            #MORGAN: this section needs to be fixed: fit does not have user, item featuers
+            # - if Competition Simulator is passed features, than it should be an easy fix
             # Retrain the recommender if needed
             if retrain and i < train_iterations - 1:
                 # Use same retraining logic as in run_simulation
@@ -747,6 +750,7 @@ class CompetitionSimulator:
                 sf.when(sf.col("relevance") > 0, 1).otherwise(0)
             )
         
+        #MORGAN: this needs to be fixed, pass in through self.user_features
         # Train the recommender one last time on all training data
         recommender.fit(log=training_log)
         
