@@ -295,7 +295,9 @@ class CompetitionSimulator:
         conversion_noise_mean=0.1,
         conversion_noise_std=0.05,
         spark_session=None,
-        seed=42
+        seed=42, 
+        users_df=None, 
+        items_df=None
     ):
         """
         Initialize the competition simulator.
@@ -366,6 +368,9 @@ class CompetitionSimulator:
         # Initialize metrics storage
         self.metrics_history = []
         self.revenue_history = []
+
+        self.users_df = users_df
+        self.items_df = items_df
         
     def _create_response_pipeline(self):
         """
@@ -449,6 +454,11 @@ class CompetitionSimulator:
             item_features=items,
             action_models=self.response_pipeline
         ).cache()
+
+        print('recs', recs.count())
+        recs.select('user_idx','item_idx', 'relevance' ).show(10)
+        print('true', true_responses.count())
+        true_responses.select('user_idx', 'item_idx', 'relevance', 'response','revenue').sort('user_idx').show(10)
         
         # Calculate basic metrics
         metrics = self.evaluator(true_responses)
@@ -557,7 +567,11 @@ class CompetitionSimulator:
                     ).drop("response")
                     
                     # Train the recommender
-                    recommender.fit(log=training_log)
+                    recommender.fit(
+                        log=training_log,
+                        user_features= self.users_df, 
+                        item_features=self.items_df
+                    )
                 else:
                     # If no response column, check if the existing relevance column needs to be binarized
                     training_log = self.simulator.log
@@ -569,7 +583,11 @@ class CompetitionSimulator:
                     )
                     
                     # Train the recommender
-                    recommender.fit(log=training_log)
+                    recommender.fit(
+                        log=training_log,
+                        user_features= self.users_df, 
+                        item_features=self.items_df
+                    )
                 
         return self.metrics_history, self.revenue_history
     
@@ -716,7 +734,11 @@ class CompetitionSimulator:
                     ).drop("response")
                     
                     # Train the recommender
-                    recommender.fit(log=training_log)
+                    recommender.fit(
+                        log=training_log,
+                        user_features= self.users_df, 
+                        item_features=self.items_df
+                    )
                 else:
                     # If no response column, check if the existing relevance column needs to be binarized
                     training_log = self.simulator.log
@@ -728,7 +750,11 @@ class CompetitionSimulator:
                     )
                     
                     # Train the recommender
-                    recommender.fit(log=training_log)
+                    recommender.fit(
+                        log=training_log,
+                        user_features= self.users_df, 
+                        item_features=self.items_df
+                    )
         
         # One final retraining using all training data
         columns = [field.name for field in self.simulator.log.schema.fields]
@@ -752,7 +778,11 @@ class CompetitionSimulator:
         
         #MORGAN: this needs to be fixed, pass in through self.user_features
         # Train the recommender one last time on all training data
-        recommender.fit(log=training_log)
+        recommender.fit(
+            log=training_log,
+            user_features= self.users_df, 
+            item_features=self.items_df
+        )
         
         print("\nStarting Testing Phase:")
         # Testing phase (no retraining)

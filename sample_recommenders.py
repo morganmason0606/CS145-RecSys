@@ -40,6 +40,10 @@ class LRRecommender(BaseRecommender):
         )
         self.scalar = StandardScaler()
     def fit(self, log:DataFrame, user_features=None, item_features=None):
+        # log.show(5)
+        # user_features.show(5)
+        # item_features.show(5)
+
         if user_features and item_features:
             pd_log = log.join(
                 user_features, 
@@ -48,15 +52,36 @@ class LRRecommender(BaseRecommender):
                 item_features, 
                 on='item_idx'
             ).drop(
-                'users_idx', 'items_idx'
+                'user_idx', 'item_idx', '__iter'
             ).toPandas()
+
             pd_log = pd.get_dummies(pd_log)
-            pd_log['price'] = self.scalar.fit_transform(pd_log['price'])
+            pd_log['price'] = self.scalar.fit_transform(pd_log[['price']])
+
             y = pd_log['relevance']
-            x = pd_log.drop('relevance')
+            x = pd_log.drop(['relevance'], axis=1)
+
             self.model.fit(x,y)
     def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
-        pass
+        cross = users.join(
+            items
+        ).drop('__iter').toPandas()
+
+        cross = pd.get_dummies(cross)
+        cross['orig_price'] = cross['price']
+        cross['price'] = self.scalar.transform(cross[['price']])
+        cross.head(10).to_csv("atransformed.csv")
+
+        cross['prob'] = self.model.predict_proba(cross.drop(['user_idx', 'item_idx', 'orig_price'], axis=1))[:,np.where(self.model.classes_ == 1)[0][0]]
+        
+        cross['relevance'] = cross['prob'] * cross["orig_price"] 
+        # cross.head(10).to_csv("apred.csv")
+        
+        cross = cross.sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
+        cross = cross.groupby('user_idx').head(k)
+        cross.head(10).to_csv("afin.csv")
+       
+        return pandas_to_spark(cross)
         
 
 class RandomRecommender:
@@ -299,6 +324,7 @@ class ContentBasedRecommender:
             user_features: User features (optional)
             item_features: Item features dataframe with feature columns
         """
+        
         if log is None or log.count() == 0 or item_features is None:
             return
             

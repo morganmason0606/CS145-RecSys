@@ -45,6 +45,7 @@ from sample_recommenders import (
     PopularityRecommender,
     ContentBasedRecommender
 )
+from sample_recommenders import *
 from config import DEFAULT_CONFIG, EVALUATION_METRICS
 
 # Cell: Define custom recommender template
@@ -430,9 +431,9 @@ def run_recommender_analysis():
     
     # Perform exploratory data analysis on the generated data
     print("\n=== Starting Exploratory Data Analysis ===")
-    explore_user_data(users_df)
-    explore_item_data(items_df)
-    explore_interactions(history_df, users_df, items_df)
+    # explore_user_data(users_df)
+    # explore_item_data(items_df)
+    # explore_interactions(history_df, users_df, items_df)
     
     # Set up data generators for simulator
     user_generator, item_generator = data_generator.setup_data_generators()
@@ -445,12 +446,18 @@ def run_recommender_analysis():
     
     # Initialize recommenders to compare
     recommenders = [
-        RandomRecommender(seed=42),
-        PopularityRecommender(alpha=1.0, seed=42),
-        ContentBasedRecommender(similarity_threshold=0.0, seed=42),
-        MyRecommender(seed=42)  # Add your custom recommender here
+        # RandomRecommender(seed=42),
+        # PopularityRecommender(alpha=1.0, seed=42),
+        # # ContentBasedRecommender(similarity_threshold=0.0, seed=42),
+        MyRecommender(seed=42),  # Add your custom recommender here
+        LRRecommender(seed=42)
     ]
-    recommender_names = ["Random", "Popularity", "ContentBased", "MyRecommender"]
+    recommender_names = [
+        # "Random", "Popularity", 
+        # # "ContentBased", 
+        "MyRecommender",
+        "LR"
+    ]
     
 
     #MORGAN: make sure this is changed
@@ -483,7 +490,9 @@ def run_recommender_analysis():
             conversion_noise_mean=config['simulation']['conversion_noise_mean'],
             conversion_noise_std=config['simulation']['conversion_noise_std'],
             spark_session=spark,
-            seed=config['data_generation']['seed']
+            seed=config['data_generation']['seed'], 
+            users_df =  users_df, 
+            items_df = items_df, 
         )
         
         # Run simulation with train-test split
