@@ -306,17 +306,41 @@ class ContentBasedRecommender:
             function: UDF for cosine similarity calculation
         """
         def cosine_similarity(v1, v2):
+            """Safely compute cosine similarity between two Spark ML Vectors.
+
+            If either vector is None or has zero norm, return 0.0 to avoid errors
+            and undefined behaviour.
+            """
+            # Guard against nulls coming from missing profiles or item features
+            if v1 is None or v2 is None:
+                return 0.0
+
+            # Compute dot product
             dot = v1.dot(v2)
+
+            # Compute L2 norms
             norm1 = float(v1.norm(2))
             norm2 = float(v2.norm(2))
-            
+
             if norm1 == 0 or norm2 == 0:
                 return 0.0
-                
+
             return float(dot / (norm1 * norm2))
             
         return sf.udf(cosine_similarity, DoubleType())
         
+    def _vector_to_dense_array_udf(self):
+        """
+        Create UDF for converting ML Vector to a dense array (list of doubles).
+        Handles both dense and sparse vectors.
+        """
+        def vector_to_dense_list(vector):
+            if vector is None:
+                return None
+            return vector.toArray().tolist()
+            
+        return sf.udf(vector_to_dense_list, ArrayType(DoubleType()))
+
     def fit(self, log, user_features=None, item_features=None):
         """
         Create user profiles based on historical interactions.
@@ -326,63 +350,98 @@ class ContentBasedRecommender:
             user_features: User features (optional)
             item_features: Item features dataframe with feature columns
         """
-        
         if log is None or log.count() == 0 or item_features is None:
             return
             
         # Create item feature vectors
-        items_with_features = self._create_feature_vectors(
+        items_with_vector_features = self._create_feature_vectors(
             item_features,
             feature_prefix="item_attr_",
-            output_col="item_features"
+            output_col="item_features_vec"  # Renamed output column
         )
         
-        # Join log with item features
+        # Convert item feature vectors to dense arrays
+        # This UDF handles both DenseVector and SparseVector types correctly
+        vec_to_array_udf = self._vector_to_dense_array_udf()
+        items_with_array_features = items_with_vector_features.withColumn(
+            "item_features_arr",  # New column with dense array features
+            vec_to_array_udf(sf.col("item_features_vec"))
+        )
+        
+        # Join log with item features (now as dense arrays)
         user_items = log.join(
-            items_with_features.select("item_idx", "item_features"),
+            items_with_array_features.select("item_idx", "item_features_arr"),  # Use the array column
             on="item_idx"
         )
         
         # Create user profiles by averaging item features weighted by relevance
         # First create a weighted feature vector for each interaction
+        # 'item_features_arr' is ArrayType(DoubleType), suitable for transform
         user_items = user_items.withColumn(
             "weighted_features",
-            sf.expr("transform(item_features.values, x -> x * relevance)")
+            sf.expr("transform(item_features_arr, x -> x * relevance)")
         )
         
-        # Group by user and compute average feature vector
-        self.user_profiles = user_items.groupBy("user_idx").agg(
-            sf.avg(sf.col("relevance")).alias("avg_relevance"),
-            sf.count("item_idx").alias("interaction_count"),
+        # Determine the number of features robustly
+        feature_cols_for_size = [col for col in item_features.columns if col.startswith("item_attr_")]
+        num_features = len(feature_cols_for_size)
+
+        if num_features == 0:
+            # No item attributes found to create profiles.
+            self.user_profiles = None
+            return
+
+        # Step 1: Aggregate to get sum_of_relevances and list_of_weighted_features per user
+        aggregation_expressions = [
+            sf.sum("relevance").alias("total_relevance_for_user"),
+            sf.collect_list("weighted_features").alias("collected_weighted_features_list"),
+            sf.count("item_idx").alias("interaction_count")
+        ]
+        user_aggregated_data = user_items.groupBy("user_idx").agg(*aggregation_expressions)
+
+        # Step 2: Sum the arrays in collected_weighted_features_list
+        # If collected_weighted_features_list is empty, aggregate returns its zero element.
+        sum_expr_str = f"""
+            aggregate(
+                collected_weighted_features_list,
+                array_repeat(0.0D, {num_features}), /* zero element: array of doubles */
+                (acc, x) -> transform(arrays_zip(acc, x), pair -> pair.acc + pair.x) /* merge function */
+            )
+        """
+        profiles_with_sum_array = user_aggregated_data.withColumn(
+            "sum_weighted_features_arr",
+            sf.expr(sum_expr_str)
+        )
+        
+        # Step 3: Normalize the summed_weighted_features_array by total_relevance_for_user
+        profiles_with_normalized_array = profiles_with_sum_array.withColumn(
+            "user_profile_arr",
+            sf.when(
+                sf.col("total_relevance_for_user").isNotNull() & (sf.col("total_relevance_for_user") > 0.0),
+                sf.expr(f"transform(sum_weighted_features_arr, val -> val / total_relevance_for_user)")
+            ).otherwise(
+                sf.expr(f"array_repeat(0.0D, {num_features})") # Default to zero array
+            )
+        )
+
+        # Step 4: Convert the user_profile_array (ArrayType(DoubleType)) to a VectorUDT
+        # Define a UDF for this conversion. It defaults to a zero vector of appropriate length.
+        def array_to_vector_udf_func(arr):
+            if arr and isinstance(arr, list) and len(arr) == num_features:
+                return Vectors.dense(arr)
+            return Vectors.dense([0.0] * num_features)
             
-            # Compute average feature vector using custom aggregation
-            sf.expr("""
-                map_from_arrays(
-                    sequence(0, size(collect_list(weighted_features)[0]) - 1),
-                    aggregate(
-                        collect_list(weighted_features),
-                        array_repeat(0.0, size(collect_list(weighted_features)[0])),
-                        (acc, x) -> transform(
-                            arrays_zip(acc, x),
-                            a -> a.acc + a.x
-                        ),
-                        acc -> transform(
-                            acc,
-                            x -> x / CAST(sum(relevance) AS DOUBLE)
-                        )
-                    )
-                )
-            """).alias("feature_map")
+        array_to_vector_udf = sf.udf(array_to_vector_udf_func, VectorUDT())
+        
+        final_user_profiles = profiles_with_normalized_array.withColumn(
+            "user_profile",
+            array_to_vector_udf(sf.col("user_profile_arr"))
         )
         
-        # Convert map to vector
-        self.user_profiles = self.user_profiles.withColumn(
-            "user_profile",
-            sf.expr("vector(map_values(feature_map))")
-        ).drop("feature_map")
-        
-        # Cache for faster access
-        self.user_profiles.cache()
+        # Cache for faster access, selecting necessary columns
+        self.user_profiles = final_user_profiles.select(
+            "user_idx", "user_profile", "interaction_count", "total_relevance_for_user"
+        ).cache()
         
     def predict(self, log, k, users, items, user_features=None, item_features=None, filter_seen_items=True):
         """
@@ -425,10 +484,14 @@ class ContentBasedRecommender:
             sf.col("user_profile").isNotNull()
         )
         
+        # Keep user_profile as vector only if profile exists; otherwise set to null. This avoids creating
+        # a literal DenseVector, which PySpark cannot handle natively with sf.lit().
         users_with_profiles = users_with_profiles.withColumn(
             "user_profile",
-            sf.when(sf.col("has_profile"), sf.col("user_profile"))
-             .otherwise(sf.lit(Vectors.dense([0.0] * items_with_features.first()["item_features"].size)))
+            sf.when(
+                sf.col("has_profile"),
+                sf.col("user_profile")
+            ).otherwise(sf.lit(None).cast(VectorUDT()))
         )
         
         # Generate candidate recommendations

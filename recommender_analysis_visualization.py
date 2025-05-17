@@ -22,7 +22,7 @@ from pyspark.ml.linalg import Vectors, VectorUDT
 from pyspark.sql.types import DoubleType, ArrayType
 
 # Set up plotting
-plt.style.use('seaborn-whitegrid')
+plt.style.use('seaborn-v0_8-whitegrid')
 sns.set_style('whitegrid')
 plt.rcParams['figure.figsize'] = (14, 8)
 
@@ -45,7 +45,6 @@ from sample_recommenders import (
     PopularityRecommender,
     ContentBasedRecommender
 )
-from sample_recommenders import *
 from config import DEFAULT_CONFIG, EVALUATION_METRICS
 
 # Cell: Define custom recommender template
@@ -431,9 +430,9 @@ def run_recommender_analysis():
     
     # Perform exploratory data analysis on the generated data
     print("\n=== Starting Exploratory Data Analysis ===")
-    # explore_user_data(users_df)
-    # explore_item_data(items_df)
-    # explore_interactions(history_df, users_df, items_df)
+    explore_user_data(users_df)
+    explore_item_data(items_df)
+    explore_interactions(history_df, users_df, items_df)
     
     # Set up data generators for simulator
     user_generator, item_generator = data_generator.setup_data_generators()
@@ -446,28 +445,18 @@ def run_recommender_analysis():
     
     # Initialize recommenders to compare
     recommenders = [
-        # RandomRecommender(seed=42),
-        # PopularityRecommender(alpha=1.0, seed=42),
-        # # ContentBasedRecommender(similarity_threshold=0.0, seed=42),
-        MyRecommender(seed=42),  # Add your custom recommender here
-        LRRecommender(seed=42)
+        RandomRecommender(seed=42),
+        PopularityRecommender(alpha=1.0, seed=42),
+        ContentBasedRecommender(similarity_threshold=0.0, seed=42),
+        MyRecommender(seed=42)  # Add your custom recommender here
     ]
-    recommender_names = [
-        # "Random", "Popularity", 
-        # # "ContentBased", 
-        "MyRecommender",
-        "LR"
-    ]
+    recommender_names = ["Random", "Popularity", "ContentBased", "MyRecommender"]
     
-
-    #MORGAN: make sure this is changed
     # Initialize recommenders with initial history
     for recommender in recommenders:
-        recommender.fit(
-            log=data_generator.history_df, 
-            user_features=users_df,
-            item_features=items_df 
-        )
+        recommender.fit(log=data_generator.history_df, 
+                        user_features=users_df, 
+                        item_features=items_df)
     
     # Evaluate each recommender separately using train-test split
     results = []
@@ -490,9 +479,7 @@ def run_recommender_analysis():
             conversion_noise_mean=config['simulation']['conversion_noise_mean'],
             conversion_noise_std=config['simulation']['conversion_noise_std'],
             spark_session=spark,
-            seed=config['data_generation']['seed'], 
-            users_df =  users_df, 
-            items_df = items_df, 
+            seed=config['data_generation']['seed']
         )
         
         # Run simulation with train-test split

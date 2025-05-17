@@ -295,9 +295,7 @@ class CompetitionSimulator:
         conversion_noise_mean=0.1,
         conversion_noise_std=0.05,
         spark_session=None,
-        seed=42, 
-        users_df=None, 
-        items_df=None
+        seed=42
     ):
         """
         Initialize the competition simulator.
@@ -368,9 +366,6 @@ class CompetitionSimulator:
         # Initialize metrics storage
         self.metrics_history = []
         self.revenue_history = []
-
-        self.users_df = users_df
-        self.items_df = items_df
         
     def _create_response_pipeline(self):
         """
@@ -433,14 +428,14 @@ class CompetitionSimulator:
         # Get item features (including prices)
         items = self.simulator.sample_items(1.0).cache() 
         
-
-        #MORGAN: predict seems to work here, though if we are doing sequential data stuff, we would need user/item features to properly get info from log
         # Generate recommendations
         recs = recommender.predict(
             log=self.simulator.log,
             k=k,
             users=users,
             items=items,
+            user_features=users,
+            item_features=items,
             filter_seen_items=filter_seen_items
         ).cache()
         
@@ -455,10 +450,10 @@ class CompetitionSimulator:
             action_models=self.response_pipeline
         ).cache()
 
-        print('recs', recs.count())
-        recs.select('user_idx','item_idx', 'relevance' ).show(10)
-        print('true', true_responses.count())
-        true_responses.select('user_idx', 'item_idx', 'relevance', 'response','revenue').sort('user_idx').show(10)
+        # print('recs', recs.count())
+        # recs.select('user_idx','item_idx', 'relevance' ).show(10)
+        # print('true', true_responses.count())
+        # true_responses.select('user_idx', 'item_idx', 'relevance', 'response','revenue').sort('user_idx').show(10)
         
         # Calculate basic metrics
         metrics = self.evaluator(true_responses)
@@ -516,7 +511,7 @@ class CompetitionSimulator:
         user_frac=0.1,
         k=5,
         filter_seen_items=True,
-        retrain=False
+        retrain=True
     ):
         """
         Run a multi-iteration simulation.
@@ -544,11 +539,12 @@ class CompetitionSimulator:
             
             print(f"Iteration {i}: Revenue = {revenue:.2f}, Metrics = {metrics}")
             
-
-            #MORGAN: this section needs to be fixed: fit does not have user, item featuers
-            # - if Competition Simulator is passed features, than it should be an easy fix
             # Retrain the recommender if needed
             if retrain and i < n_iterations - 1:
+                # Prepare full users/items feature dataframes for training (use the entire catalog)
+                full_user_features = self.simulator.sample_users(1.0).cache()
+                full_item_features = self.simulator.sample_items(1.0).cache()
+                
                 # Check if the log dataframe contains a 'response' column
                 columns = [field.name for field in self.simulator.log.schema.fields]
                 
@@ -569,8 +565,8 @@ class CompetitionSimulator:
                     # Train the recommender
                     recommender.fit(
                         log=training_log,
-                        user_features= self.users_df, 
-                        item_features=self.items_df
+                        user_features=full_user_features,
+                        item_features=full_item_features
                     )
                 else:
                     # If no response column, check if the existing relevance column needs to be binarized
@@ -585,10 +581,10 @@ class CompetitionSimulator:
                     # Train the recommender
                     recommender.fit(
                         log=training_log,
-                        user_features= self.users_df, 
-                        item_features=self.items_df
+                        user_features=full_user_features,
+                        item_features=full_item_features
                     )
-                
+        
         return self.metrics_history, self.revenue_history
     
     def compare_recommenders(
@@ -712,11 +708,13 @@ class CompetitionSimulator:
             train_metrics_history.append(metrics)
             train_revenue_history.append(revenue)
             
-            #MORGAN: this section needs to be fixed: fit does not have user, item featuers
-            # - if Competition Simulator is passed features, than it should be an easy fix
             # Retrain the recommender if needed
             if retrain and i < train_iterations - 1:
-                # Use same retraining logic as in run_simulation
+                # Prepare full users/items feature dataframes for training (use the entire catalog)
+                full_user_features = self.simulator.sample_users(1.0)
+                full_item_features = self.simulator.sample_items(1.0)
+                
+                # Check if the log dataframe contains a 'response' column
                 columns = [field.name for field in self.simulator.log.schema.fields]
                 
                 if 'response' in columns:
@@ -736,8 +734,8 @@ class CompetitionSimulator:
                     # Train the recommender
                     recommender.fit(
                         log=training_log,
-                        user_features= self.users_df, 
-                        item_features=self.items_df
+                        user_features=full_user_features,
+                        item_features=full_item_features
                     )
                 else:
                     # If no response column, check if the existing relevance column needs to be binarized
@@ -752,11 +750,14 @@ class CompetitionSimulator:
                     # Train the recommender
                     recommender.fit(
                         log=training_log,
-                        user_features= self.users_df, 
-                        item_features=self.items_df
+                        user_features=full_user_features,
+                        item_features=full_item_features
                     )
         
         # One final retraining using all training data
+        full_user_features_final = self.simulator.sample_users(1.0)
+        full_item_features_final = self.simulator.sample_items(1.0)
+
         columns = [field.name for field in self.simulator.log.schema.fields]
         training_log = self.simulator.log
         if 'response' in columns:
@@ -775,13 +776,12 @@ class CompetitionSimulator:
                 "relevance",
                 sf.when(sf.col("relevance") > 0, 1).otherwise(0)
             )
-        
-        #MORGAN: this needs to be fixed, pass in through self.user_features
+
         # Train the recommender one last time on all training data
         recommender.fit(
             log=training_log,
-            user_features= self.users_df, 
-            item_features=self.items_df
+            user_features=full_user_features_final,
+            item_features=full_item_features_final
         )
         
         print("\nStarting Testing Phase:")
