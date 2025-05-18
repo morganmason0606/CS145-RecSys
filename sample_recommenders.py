@@ -86,6 +86,73 @@ class LRRecommender(BaseRecommender):
         return pandas_to_spark(cross)
         
 
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sim4rec.utils import pandas_to_spark
+from pyspark.sql import DataFrame
+
+class RandomForestRecommender:
+    """
+    Recommender using Random Forest to predict purchase likelihood,
+    then ranks items based on predicted probability × price.
+    """
+
+    def __init__(self, seed=None):
+        self.seed = seed
+        self.model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=None,
+            random_state=seed,
+            n_jobs=-1
+        )
+        self.scaler = StandardScaler()
+
+    def fit(self, log: DataFrame, user_features=None, item_features=None):
+        if user_features and item_features:
+            pd_log = log.join(
+                user_features, on='user_idx'
+            ).join(
+                item_features, on='item_idx'
+            ).drop(
+                'user_idx', 'item_idx', '__iter'
+            ).toPandas()
+
+            pd_log = pd.get_dummies(pd_log)
+            pd_log['price'] = self.scaler.fit_transform(pd_log[['price']])
+
+            y = pd_log['relevance']
+            X = pd_log.drop(['relevance'], axis=1)
+
+            self.model.fit(X, y)
+
+    def predict(self, log, k, users: DataFrame, items: DataFrame,
+                user_features=None, item_features=None, filter_seen_items=True):
+        # Join all user-item pairs
+        cross = users.join(items).drop('__iter').toPandas().copy()
+        cross = pd.get_dummies(cross)
+
+        cross['orig_price'] = cross['price']
+        cross['price'] = self.scaler.transform(cross[['price']])
+
+        # Predict probability of purchase
+        prob_col = self.model.predict_proba(
+            cross.drop(['user_idx', 'item_idx', 'orig_price'], axis=1)
+        )[:, 1]
+        cross['prob'] = prob_col
+
+        # Score = probability × price
+        cross['relevance'] = cross['prob'] * cross['orig_price']
+
+        # Rank and select top-k items per user
+        cross = cross.sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
+        cross = cross.groupby('user_idx').head(k)
+
+        cross['price'] = cross['orig_price']  # restore for evaluation
+        return pandas_to_spark(cross)
+
+
 class RandomRecommender:
     """
     Random recommendation algorithm.
