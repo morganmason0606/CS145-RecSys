@@ -176,5 +176,6 @@ cython_debug/
 *.png
 sim4rec/
 simulator_trai*/
-__pycache__/
+**/__pycache__/ 
 competition_data/
+competition_data
