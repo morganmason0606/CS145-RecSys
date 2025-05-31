@@ -15,6 +15,7 @@ import sklearn
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sim4rec.utils import pandas_to_spark
+from sklearn.ensemble import RandomForestClassifier
 
 class BaseRecommender:
     def __init__(self, seed=None, top_k: float=2.0):
@@ -81,6 +82,52 @@ class BaseRecommender:
         )
         
         return pandas_to_spark(cross)
+
+class LRRecommender(BaseRecommender):
+    def __init__(self, seed=None, top_k=2.0, C=1.0):
+        super().__init__(seed, top_k)
+        self.model = LogisticRegression(
+            penalty='l2', 
+            C=C
+        )
+
+    def fit(self, log:DataFrame, user_features=None, item_features=None):
+        
+        if user_features and item_features:
+            pd_log = self.preprocess_data(log, user_features, item_features)
+
+            y = pd_log['relevance']
+            x = pd_log.drop(['relevance', 'price'], axis=1)
+
+            self.model.fit(x,y)
+    def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
+
+        cross, x = self.prepare_predict(users, items)
+        cross['prob'] = self.model.predict_proba(x)[:,np.where(self.model.classes_ == 1)[0][0]]
+               
+        return self.finalize_predict(cross, k)
+
+class RFRecommender(BaseRecommender):
+    def __init__(self, seed=None, top_k=2.0, n_estimators=16):
+        super().__init__()
+        self.model = RandomForestClassifier(
+            n_estimators=n_estimators, 
+        )
+    def fit(self, log, user_features, item_features):
+        if user_features and item_features: 
+            pd_log = self.preprocess_data(log, user_features, item_features)
+            
+            y = pd_log['relevance']
+            x = pd_log.drop(['relevance', 'price'], axis=1)
+
+            self.model.fit(x,y)
+    def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
+
+        cross, x = self.prepare_predict(users, items)
+        cross['prob'] = self.model.predict_proba(x)[:,np.where(self.model.classes_ == 1)[0][0]]
+               
+        return self.finalize_predict(cross, k)
+
 
 from xgboost import XGBClassifier
 class XGBModel(BaseRecommender):
@@ -179,31 +226,6 @@ class NN(nn.Module):
 
         return out
 
-    
-class LRRecommender(BaseRecommender):
-    def __init__(self, seed=None, top_k=2.0, C=1.0):
-        super().__init__(seed, top_k)
-        self.model = LogisticRegression(
-            penalty='l2', 
-            C=C
-        )
-
-    def fit(self, log:DataFrame, user_features=None, item_features=None):
-        
-        if user_features and item_features:
-            pd_log = self.preprocess_data(log, user_features, item_features)
-
-            y = pd_log['relevance']
-            x = pd_log.drop(['relevance', 'price'], axis=1)
-
-            self.model.fit(x,y)
-    def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
-
-        cross, x = self.prepare_predict(users, items)
-        cross['prob'] = self.model.predict_proba(x)[:,np.where(self.model.classes_ == 1)[0][0]]
-               
-        return self.finalize_predict(cross, k)
-
 
 class DNNRecommender(BaseRecommender):
     def __init__(self, seed=None, top_k=2.0,  hidden1=24, hidden2=8, epochs=100, learning_rate=0.001):
@@ -277,3 +299,107 @@ class DNN(nn.Module):
         out = self.sigmoid(out)
 
         return out
+
+
+class BetterBase:
+    def __init__(self, seed=None, top_k: float=2.0):
+        self.seed = seed
+        np.random.seed(seed)
+        self.log: Optional[DataFrame] = None
+        self.scalar = StandardScaler()
+        self.top_k = top_k # > 1, the top k*top_k probs you want to consider before sorting on expected price
+    def fit(self, log, user_features=None, item_features=None):
+        raise NotImplemented()
+    def predict(self, log, k, users, items, user_features=None, item_features=None, filter_seen_items=True):
+        raise NotImplemented()
+    
+    def join_log(self, log):
+        # keep a running total of 
+        if self.log:
+            self.log.union(log.select('user_idx', 'item_idx', 'relevance'))
+        else:
+            self.log = log.select('user_idx', 'item_idx', 'relevance')
+    def preprocess_data(self, log, user_features, item_features) -> pd.DataFrame:  
+        """expects user_featuers, item_features"""       
+        pd_log = self.log.join(
+            user_features, 
+            on='user_idx'
+        ).join(
+            item_features, 
+            on='item_idx'
+        ).drop(
+            'user_idx', 'item_idx', '__iter'
+        ).toPandas()
+
+        pd_log['scaled_price'] = self.scalar.fit_transform(pd_log[['price']])
+
+        pd_log['cross'] = pd_log['segment'].astype(str) + '_' + pd_log['category'].astype(str)
+        pd_log = pd.get_dummies(pd_log, columns=['cross'], prefix='cross_col')
+        cross_col = [col for col in pd_log.columns if col.startswith('cross_col')]
+        for col in cross_col:
+            pd_log[col]*= pd_log['scaled_price']
+         
+        return pd_log.drop(['segment', 'category'], axis=1)
+    
+    def prepare_predict(self, users, items) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """cross, x"""
+        cross = (
+            users
+            .join(items)
+            .drop('__iter')
+            .toPandas()
+        )
+
+        cross['scaled_price'] = self.scalar.transform(cross[['price']])
+        cross['cross'] = cross['segment'].astype(str) + '_' + cross['category'].astype(str)
+        cross = pd.get_dummies(cross, columns=['cross'], prefix='cross_col')
+        cross_col = [col for col in cross.columns if col.startswith('cross_col')]
+        for col in cross_col:
+            cross[col]*= cross['scaled_price']
+
+        x = cross.drop(['user_idx', 'item_idx', 'price', 'segment', 'category'], axis=1)
+        return (cross, x)
+
+    def finalize_predict(self, cross: pd.DataFrame, k) -> DataFrame:
+        """expect cross to have prob, price, user_idx"""
+        cross = (
+            cross
+            .sort_values(by=['user_idx', 'prob'], ascending=[True, False])
+            .groupby('user_idx')
+            .head(int(k*self.top_k))
+        )
+        cross['relevance'] = cross['prob'] * cross["price"] 
+        cross = (
+            cross
+            .sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
+            .groupby('user_idx')
+            .head(k)
+        )
+        
+        return pandas_to_spark(cross)
+
+class BLRRecommender(BetterBase):
+    def __init__(self, seed=None, top_k=2.0, C=1.0, penalty='l2'):
+        super().__init__(seed, top_k)
+        self.model = LogisticRegression(
+            penalty=penalty, 
+            C=C
+        )
+
+    def fit(self, log:DataFrame, user_features=None, item_features=None):
+        
+        if user_features and item_features:
+            self.join_log(log)
+
+            pd_log = self.preprocess_data(log, user_features, item_features)
+
+            y = pd_log['relevance']
+            x = pd_log.drop(['relevance', 'price'], axis=1)
+
+            self.model.fit(x,y)
+    def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
+
+        cross, x = self.prepare_predict(users, items)
+        cross['prob'] = self.model.predict_proba(x)[:,np.where(self.model.classes_ == 1)[0][0]]
+               
+        return self.finalize_predict(cross, k)
