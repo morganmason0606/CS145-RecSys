@@ -36,6 +36,7 @@ class BaseRecommender:
             self.log.union(log.select('user_idx', 'item_idx', 'relevance'))
         else:
             self.log = log.select('user_idx', 'item_idx', 'relevance')
+    
     def preprocess_data(self, log, user_features, item_features) -> pd.DataFrame: 
         self.join_log(log)
         pd_log = self.log.join(
@@ -45,12 +46,12 @@ class BaseRecommender:
             item_features, 
             on='item_idx'
         ).drop(
-            'user_idx', 'item_idx', '__iter'
+            '__iter'
         ).toPandas()
 
         pd_log = pd.get_dummies(pd_log)
         pd_log['scaled_price'] = self.scalar.fit_transform(pd_log[['price']])
-        return pd_log
+        return pd_log.drop(['user_idx', 'item_idx'], axis=1)
     
     def prepare_predict(self, users, items) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """cross, x"""
@@ -67,27 +68,43 @@ class BaseRecommender:
 
     def finalize_predict(self, cross: pd.DataFrame, k) -> DataFrame:
         """expect cross to have prob, price, user_idx"""
+        # cross = (
+        #     cross
+        #     .sort_values(by=['user_idx', 'prob'], ascending=[True, False])
+        #     .groupby('user_idx')
+        #     .head(int(k*self.top_k))
+        # )
+        # cross['relevance'] = cross['prob'] * cross["price"] 
+        # cross = (
+        #     cross
+        #     .sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
+        #     .groupby('user_idx')
+        #     .head(k)
+        # )
         cross = (
             cross
-            .sort_values(by=['user_idx', 'prob'], ascending=[True, False])
             .groupby('user_idx')
-            .head(int(k*self.top_k))
+            .apply(lambda x: x.nlargest(int(k*self.top_k), 'prob'))
+            .reset_index(drop=True)
         )
-        cross['relevance'] = cross['prob'] * cross["price"] 
+        cross['relevance'] = cross['prob'] * cross['price']
+        
         cross = (
             cross
+            .groupby('user_idx')
+            .apply(lambda x: x.nlargest(k, 'relevance'))
+            .reset_index(drop=True)
             .sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
-            .groupby('user_idx')
-            .head(k)
         )
+
         
         return pandas_to_spark(cross)
 
 class LRRecommender(BaseRecommender):
-    def __init__(self, seed=None, top_k=2.0, C=1.0):
+    def __init__(self, seed=None, top_k=2.0, C=1.0, penalty='l2'):
         super().__init__(seed, top_k)
         self.model = LogisticRegression(
-            penalty='l2', 
+            penalty=penalty, 
             C=C
         )
 
@@ -95,16 +112,24 @@ class LRRecommender(BaseRecommender):
         
         if user_features and item_features:
             pd_log = self.preprocess_data(log, user_features, item_features)
-
+            # print(pd_log.head(5))
             y = pd_log['relevance']
             x = pd_log.drop(['relevance', 'price'], axis=1)
+
+            y.head(5)
+            x.head(5)
 
             self.model.fit(x,y)
     def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
 
         cross, x = self.prepare_predict(users, items)
         cross['prob'] = self.model.predict_proba(x)[:,np.where(self.model.classes_ == 1)[0][0]]
-               
+
+        cross.head(5)
+        x.head(5)
+
+        fin = self.finalize_predict(cross, k)
+        fin.head(5)
         return self.finalize_predict(cross, k)
 
 class RFRecommender(BaseRecommender):
