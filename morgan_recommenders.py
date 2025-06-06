@@ -33,9 +33,12 @@ class BaseRecommender:
     def join_log(self, log):
         # keep a running total of 
         if self.log:
-            self.log.union(log.select('user_idx', 'item_idx', 'relevance'))
+            self.log = self.log.union(log.select('user_idx', 'item_idx', 'relevance'))
         else:
             self.log = log.select('user_idx', 'item_idx', 'relevance')
+        print(log.count(), self.log.count())
+        # log.head(5)
+        # self.log.head(5)
     
     def preprocess_data(self, log, user_features, item_features) -> pd.DataFrame: 
         self.join_log(log)
@@ -101,7 +104,7 @@ class BaseRecommender:
         return pandas_to_spark(cross)
 
 class LRRecommender(BaseRecommender):
-    def __init__(self, seed=None, top_k=2.0, C=1.0, penalty='l2'):
+    def __init__(self, seed=None, top_k=2.0, C=1e-4, penalty='l2'):
         super().__init__(seed, top_k)
         self.model = LogisticRegression(
             penalty=penalty, 
@@ -185,7 +188,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 class NNRecommender(BaseRecommender):
-    def __init__(self, seed=None, top_k=2.0,  hidden=24, epochs=100, learning_rate=0.001):
+    def __init__(self, seed=None, top_k=2.0,  hidden=24, epochs=500, learning_rate=0.001):
         super().__init__(seed, top_k)
         self.NN = NN(hidden)
         self.learning_rate = learning_rate
@@ -204,6 +207,7 @@ class NNRecommender(BaseRecommender):
             optimizer = optim.Adam(self.NN.parameters(), lr=self.learning_rate)
             self.NN.train()
             prev_loss = None
+            losses = []
             for epoch in range(self.epochs):
 
                 outputs = self.NN(x)
@@ -212,6 +216,8 @@ class NNRecommender(BaseRecommender):
                 optimizer.zero_grad() 
                 loss.backward()       
                 optimizer.step()
+                losses.append(loss)
+            print(losses)
     
     def get_x(self, x):
         bool_cols = x.select_dtypes(include='bool').columns

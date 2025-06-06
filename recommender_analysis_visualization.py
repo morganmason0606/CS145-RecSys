@@ -54,8 +54,8 @@ from config import DEFAULT_CONFIG, EVALUATION_METRICS
 Below is a template class for implementing a custom recommender system.
 Students should extend this class with their own recommendation algorithm.
 """
-
-class MyRecommender:
+from submission import MyRecommender
+class MyRecommender2:
     """
     Template class for implementing a custom recommender.
     
