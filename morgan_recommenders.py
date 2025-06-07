@@ -71,19 +71,6 @@ class BaseRecommender:
 
     def finalize_predict(self, cross: pd.DataFrame, k) -> DataFrame:
         """expect cross to have prob, price, user_idx"""
-        # cross = (
-        #     cross
-        #     .sort_values(by=['user_idx', 'prob'], ascending=[True, False])
-        #     .groupby('user_idx')
-        #     .head(int(k*self.top_k))
-        # )
-        # cross['relevance'] = cross['prob'] * cross["price"] 
-        # cross = (
-        #     cross
-        #     .sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
-        #     .groupby('user_idx')
-        #     .head(k)
-        # )
         cross = (
             cross
             .groupby('user_idx')
