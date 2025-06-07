@@ -338,3 +338,105 @@ class LSTMModel(nn.Module):
         out = self.fc(out)
         out = torch.sigmoid(out)
         return out, (hn, cn)
+
+class TransformerRec(BaseSequential):
+    def __init__(self, seed=42, top_k=2.0, h=32, nhead=4, num_layers=2, early_break=3):
+        super().__init__(seed, top_k)
+        self.hidden = h
+        self.nhead = nhead
+        self.num_layers = num_layers
+        self.model = None
+        self.epochs = 25
+        self.early_break = early_break
+
+    def fit(self, log, user_features=None, item_features=None):
+        pd_log = self.preprocess_data(log, user_features, item_features)
+        pd_log = pd.get_dummies(pd_log)
+        grouped_data = pd_log.groupby(['user_idx'])
+        input_dim = len(FEATURES)
+        model = TransformerModel(input_dim, self.hidden, self.nhead, self.num_layers)
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        self.model = model
+        for epoch in range(self.epochs):
+            model.train()
+            total_loss = 0.0
+            for user_idx, user_df in grouped_data:
+                user_df = user_df.sort_values('iter')
+                x = torch.tensor(user_df[FEATURES].values.astype(np.float32), dtype=torch.float32).unsqueeze(0)  # (1, seq_len, input_dim)
+                y = torch.tensor(user_df['relevance'].values, dtype=torch.float32)  # (seq_len,)
+                optimizer.zero_grad()
+                output = model(x)
+                output = output.squeeze()
+                if output.dim() == 0:
+                    output = output.unsqueeze(0)
+                loss = criterion(output, y)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"Epoch {epoch}, Loss: {total_loss}")
+            if total_loss < self.early_break:
+                print('early break')
+                break
+        self.model = model
+
+    def predict(self, log, k, users, items, user_features=None, item_features=None, filter_seen_items=True):
+        self.model.eval()
+        pd_log = (
+            self.log
+            .join(user_features, on='user_idx')
+            .join(item_features, on='item_idx')
+        ).toPandas()
+        pd_log['scaled_price'] = self.scalar.transform(pd_log[['price']])
+        pd_log = pd.get_dummies(pd_log)
+        items_pd = items.toPandas()
+        items_pd = pd.get_dummies(items_pd)
+        items_pd['scaled_price'] = self.scalar.transform(items_pd[['price']])
+        users_pd = users.toPandas()
+        users_pd = pd.get_dummies(users_pd)
+        results = []
+        grouped_data = pd_log.groupby(['user_idx'])
+        for user_idx, user_df in grouped_data:
+            if isinstance(user_idx, tuple):
+                user_idx_val = user_idx[0]
+            else:
+                user_idx_val = user_idx
+            user_row = users_pd[users_pd['user_idx'] == user_idx_val]
+            if user_row.empty:
+                continue
+            user_df = user_df.sort_values('iter')
+            print(user_df.columns)
+            x = torch.tensor(user_df[FEATURES].values.astype(np.float32), dtype=torch.float32).unsqueeze(0)  # (1, seq_len, input_dim)
+            with torch.no_grad():
+                _ = self.model(x)  # No hidden state for transformer
+            user_feat = user_row.iloc[0].to_dict()
+            for _, item_row in items_pd.iterrows():
+                feature_dict = {**user_feat, **item_row.to_dict()}
+                feature_vec = [feature_dict.get(f, 0.0) for f in FEATURES]
+                feature_tensor = torch.tensor(feature_vec, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1, 1, input_dim)
+                with torch.no_grad():
+                    prob = self.model(feature_tensor)
+                results.append({
+                    'user_idx': user_idx_val,
+                    'item_idx': item_row['item_idx'],
+                    'prob': prob.item(),
+                    'price': item_row['price'] if 'price' in item_row else 1.0
+                })
+        cross = pd.DataFrame(results)
+        fin = self.finalize_predict(cross, k)
+        return fin
+
+class TransformerModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, nhead, num_layers, output_dim=1):
+        super(TransformerModel, self).__init__()
+        self.input_fc = nn.Linear(input_dim, hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=nhead, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+    def forward(self, x):
+        # x: (batch, seq_len, input_dim)
+        x = self.input_fc(x)
+        out = self.transformer_encoder(x)  # (batch, seq_len, hidden_dim)
+        out = self.fc(out)  # (batch, seq_len, output_dim)
+        out = torch.sigmoid(out)
+        return out.squeeze(-1)
