@@ -7,8 +7,9 @@ from pyspark.sql import functions as sf
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.linalg import Vectors, VectorUDT
 from pyspark.sql.types import DoubleType, ArrayType
-
+from xgboost import XGBClassifier
 from sim4rec.recommenders.ucb import UCB
+
 class BaseRecommender:
     def __init__(self, seed=None):
         self.seed = seed
@@ -29,16 +30,85 @@ class BaseRecommender:
     
 import sklearn 
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
 from sim4rec.utils import pandas_to_spark
-class LRRecommender(BaseRecommender):
+
+class XGBoostRecommender(BaseRecommender):
+    def __init__(self, seed=None, top_k=2.0):
+        super().__init__(seed)
+        np.random.seed(seed)
+        self.log = None
+        self.scalar = StandardScaler()
+        self.top_k = top_k
+        self.model = XGBClassifier(
+            objective='binary:logistic',
+            n_estimators=50,
+            max_depth=4,
+            learning_rate=0.1,
+            use_label_encoder=False,
+            eval_metric='logloss'
+        )
+
+    def join_log(self, log):
+        if self.log is not None:
+            self.log = self.log.union(log.select('user_idx', 'item_idx', 'relevance'))
+        else:
+            self.log = log.select('user_idx', 'item_idx', 'relevance')
+
+    def preprocess_data(self, log, user_features, item_features):
+        self.join_log(log)
+        df = self.log.join(user_features, on='user_idx').join(item_features, on='item_idx').drop('__iter')
+        pd_df = df.toPandas()
+        pd_df = pd.get_dummies(pd_df)
+        pd_df['scaled_price'] = self.scalar.fit_transform(pd_df[['price']])
+        return pd_df
+
+    def prepare_predict(self, users, items):
+        cross = users.join(items).drop('__iter').toPandas()
+        cross = pd.get_dummies(cross)
+        cross['scaled_price'] = self.scalar.transform(cross[['price']])
+        x = cross.drop(columns=['user_idx', 'item_idx', 'price'], errors='ignore')
+        return cross, x
+
+    def finalize_predict(self, cross, k):
+        cross = (
+            cross
+            .groupby('user_idx')
+            .apply(lambda x: x.nlargest(int(k * self.top_k), 'prob'))
+            .reset_index(drop=True)
+        )
+        cross['relevance'] = cross['prob'] * cross['price']
+        cross = (
+            cross
+            .groupby('user_idx')
+            .apply(lambda x: x.nlargest(k, 'relevance'))
+            .reset_index(drop=True)
+            .sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
+        )
+        return pandas_to_spark(cross)
+
+    def fit(self, log, user_features=None, item_features=None):
+        if user_features and item_features:
+            pd_df = self.preprocess_data(log, user_features, item_features)
+            y = pd_df['relevance']
+            #X = pd_df.drop(columns=['relevance', 'price'], errors='ignore')
+            X = pd_df.drop(columns=['relevance', 'price', 'user_idx', 'item_idx'], errors='ignore')
+            self.model.fit(X, y)
+
+    def predict(self, log, k, users, items, user_features=None, item_features=None, filter_seen_items=True):
+        cross, X = self.prepare_predict(users, items)
+        cross['prob'] = self.model.predict_proba(X)[:, 1]
+        return self.finalize_predict(cross, k)
+
+class SVMRecommender(BaseRecommender):
     def __init__(self, seed=None):
         super().__init__(seed)
-        self.model = LogisticRegression(
-            penalty='l2', 
-            C=1.0
+        self.model = sklearn.svm.SVC(
+            kernel='rbf',
+            probability=True,
+            random_state=self.seed
         )
         self.scalar = StandardScaler()
+
     def fit(self, log:DataFrame, user_features=None, item_features=None):
         # log.show(5)
         # user_features.show(5)
@@ -55,36 +125,41 @@ class LRRecommender(BaseRecommender):
                 'user_idx', 'item_idx', '__iter'
             ).toPandas()
 
-            pd_log = pd.get_dummies(pd_log)
+            pd_log = pd.get_dummies(pd_log, dtype=float)
             pd_log['price'] = self.scalar.fit_transform(pd_log[['price']])
 
             y = pd_log['relevance']
             x = pd_log.drop(['relevance'], axis=1)
 
             self.model.fit(x,y)
+
     def predict(self, log, k, users:DataFrame, items:DataFrame, user_features=None, item_features=None, filter_seen_items=True):
         cross = users.join(
             items
         ).drop('__iter').toPandas().copy()
 
-        cross = pd.get_dummies(cross)
+        cross = pd.get_dummies(cross, dtype=float)
         cross['orig_price'] = cross['price']
         cross['price'] = self.scalar.transform(cross[['price']])
-        cross.head(10).to_csv("atransformed.csv")
 
         cross['prob'] = self.model.predict_proba(cross.drop(['user_idx', 'item_idx', 'orig_price'], axis=1))[:,np.where(self.model.classes_ == 1)[0][0]]
         
-        cross['relevance'] = cross['prob'] * cross["orig_price"] 
-        # cross.head(10).to_csv("apred.csv")
+        cross['relevance'] = (np.sin(cross['prob']) + 1) * np.exp(cross['prob'] - 1) * np.log1p(cross["orig_price"]) * np.cos(cross["orig_price"] / 100) * (1 + np.tan(cross['prob'] * np.pi / 4))
         
         cross = cross.sort_values(by=['user_idx', 'relevance'], ascending=[True, False])
         cross = cross.groupby('user_idx').head(k)
-        cross.head(10).to_csv("afin.csv")
 
         cross['price'] = cross['orig_price']
-       
-        return pandas_to_spark(cross)
         
+        # Convert back to Spark and fix schema types to match original log
+        from pyspark.sql.types import LongType
+        result = pandas_to_spark(cross)
+        result = result.withColumn("user_idx", sf.col("user_idx").cast(LongType()))
+        result = result.withColumn("item_idx", sf.col("item_idx").cast(LongType()))
+       
+        return result
+        
+
 
 class RandomRecommender:
     """
