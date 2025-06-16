@@ -43,7 +43,9 @@ from simulator import CompetitionSimulator
 from sample_recommenders import (
     RandomRecommender,
     PopularityRecommender,
-    ContentBasedRecommender
+    ContentBasedRecommender, 
+    SVMRecommender,
+    XGBoostRecommender,
 )
 from config import DEFAULT_CONFIG, EVALUATION_METRICS
 
@@ -445,12 +447,13 @@ def run_recommender_analysis():
     
     # Initialize recommenders to compare
     recommenders = [
+        SVMRecommender(seed=42), 
         RandomRecommender(seed=42),
         PopularityRecommender(alpha=1.0, seed=42),
         ContentBasedRecommender(similarity_threshold=0.0, seed=42),
-        MyRecommender(seed=42)  # Add your custom recommender here
+        XGBoostRecommender(seed=42)
     ]
-    recommender_names = ["Random", "Popularity", "ContentBased", "MyRecommender"]
+    recommender_names = ["SVM", "Random", "Popularity", "ContentBased", "XGBoost"]
     
     # Initialize recommenders with initial history
     for recommender in recommenders:
